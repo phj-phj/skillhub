@@ -118,43 +118,33 @@ function checkAndRebuild(projectRoot, registryPath) {
   }
 }
 
-// --- 格式化索引表 ---
-function formatTable(registry) {
+// --- Format index output (ultra-compact) ---
+function formatIndex(registry) {
   const skills = registry.skills || [];
   if (skills.length === 0) return "";
 
   const lines = [];
-  lines.push("## Skill Index (skillhub)");
+  lines.push("## Skill Index");
   lines.push("");
 
-  // 分组
+  // Group
   const groups = {};
   for (const sk of skills) {
     const src = sk.source || "project";
     (groups[src] = groups[src] || []).push(sk);
   }
 
-  const labels = { project: "项目技能", user: "用户技能" };
+  const labels = { project: "project:", user: "user:" };
 
   for (const [source, list] of Object.entries(groups)) {
     if (list.length === 0) continue;
-    lines.push(`### ${labels[source] || source}`);
-    lines.push("");
-    lines.push("| Skill | 概要 | 触发词 |");
-    lines.push("|-------|------|--------|");
-
+    lines.push(labels[source] || source);
     for (const sk of list) {
-      const name = sk.name;
-      const summary = (sk.summary || "").substring(0, 80);
-      const triggers = (sk.keywords || []).slice(0, 5).join(", ");
-      lines.push(`| ${name} | ${summary} | ${triggers} |`);
+      const triggers = (sk.keywords || []).slice(0, 4).join(", ");
+      lines.push(`/${sk.name}  ${triggers}`);
     }
-
     lines.push("");
   }
-
-  lines.push("> Tip: 一个请求可能匹配多个技能——请并行调用所有匹配的技能。");
-  lines.push("> 用法: `/skillname` 直接调用，或通过 Skill 工具并行调用多个。");
 
   return lines.join("\n");
 }
@@ -202,8 +192,8 @@ function main() {
     }
   }
 
-  const table = formatTable(registry);
-  if (table) console.log(table);
+  const output = formatIndex(registry);
+  if (output) console.log(output);
 }
 
 main();
