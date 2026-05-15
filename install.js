@@ -61,9 +61,9 @@ function writeJSON(filePath, obj) {
 
 // --- 安装步骤 ---
 function installUserLevel() {
-  console.log("\n[1/4] 安装到用户级: " + USER_COMMANDS);
+  console.log("\n[1/5] 安装到用户级: " + USER_COMMANDS);
 
-  // 复制 skillhub 核心文件（不复制 README/LICENSE/.gitignore）
+  // 复制 skillhub 核心文件（不复制 README/LICENSE/.gitignore/install.js）
   const scriptsSrc = path.join(SKILLHUB_SRC, "scripts");
   const scriptsDest = path.join(USER_COMMANDS, "scripts");
   copyDir(scriptsSrc, scriptsDest);
@@ -76,7 +76,7 @@ function installUserLevel() {
 }
 
 function installProjectLevel(projectPath) {
-  console.log("\n[2/4] 安装到项目级: " + projectPath);
+  console.log("\n[2/5] 安装到项目级: " + projectPath);
 
   const projectCommands = path.join(projectPath, ".claude", "commands", "skillhub");
   const scriptsSrc = path.join(SKILLHUB_SRC, "scripts");
@@ -91,7 +91,7 @@ function installProjectLevel(projectPath) {
 }
 
 function buildIndex(projectPath) {
-  console.log("\n[3/4] 构建初始技能索引...");
+  console.log("\n[3/5] 构建初始技能索引...");
 
   const indexerPath = path.join(USER_COMMANDS, "scripts", "indexer.js");
   if (!fs.existsSync(indexerPath)) {
@@ -112,8 +112,48 @@ function buildIndex(projectPath) {
   }
 }
 
+function syncPlatforms(projectPath) {
+  console.log("\n[4/5] 同步到其他 AI 平台...");
+
+  // 检测各平台的规则文件
+  const platforms = {
+    cursor: { name: "Cursor", file: ".cursorrules", altFile: ".cursor/rules/skillhub.mdc" },
+    windsurf: { name: "WindSurf", file: ".windsurfrules" },
+    copilot: { name: "GitHub Copilot", file: ".github/copilot-instructions.md" },
+  };
+
+  let synced = 0;
+  for (const [key, plat] of Object.entries(platforms)) {
+    const filePath = path.join(projectPath, plat.file);
+    const altPath = plat.altFile ? path.join(projectPath, plat.altFile) : null;
+
+    if (fs.existsSync(filePath) || (altPath && fs.existsSync(path.dirname(altPath)))) {
+      const target = altPath && fs.existsSync(path.dirname(altPath)) ? altPath : filePath;
+      try {
+        const { execSync } = require("child_process");
+        const syncScript = path.join(USER_COMMANDS, "scripts", "sync-rules.js");
+        if (fs.existsSync(syncScript)) {
+          execSync(`node "${syncScript}" --project-path "${projectPath}" --${key}`, {
+            encoding: "utf-8",
+            cwd: projectPath,
+          });
+          console.log(`   ✓ ${plat.name}: ${target}`);
+          synced++;
+        }
+      } catch (err) {
+        console.log(`   ⚠ ${plat.name}: ${err.message.trim()}`);
+      }
+    }
+  }
+
+  if (synced === 0) {
+    console.log("   未检测到 Cursor/WindSurf/Copilot 项目文件，跳过。");
+    console.log("   后续可手动运行: node scripts/sync-rules.js --all");
+  }
+}
+
 function configureHook() {
-  console.log("\n[4/4] 配置 SessionStart Hook...");
+  console.log("\n[5/5] 配置 Claude Code SessionStart Hook...");
 
   // 生成跨平台 hook 命令
   const hookCmd = process.platform === "win32"
@@ -173,12 +213,27 @@ function main() {
   const indexProject = projectPath || process.cwd();
   buildIndex(indexProject);
 
-  // 配置 hook
+  // 同步到其他 AI 平台 (Cursor / WindSurf / Copilot)
+  if (doProject && projectPath) syncPlatforms(projectPath);
+
+  // 配置 Claude Code hook
   if (doUser) configureHook();
 
   console.log("\n=== 安装完成 ===");
-  console.log("下次启动 Claude Code 时，skillhub 将自动生效。");
-  console.log("测试: node \"" + path.join(USER_COMMANDS, "scripts", "inject-hook.js") + "\"");
+  console.log("支持平台: Claude Code (Hook)");
+
+  // 检查是否同步了其他平台
+  const hasCursor = fs.existsSync(path.join(indexProject, ".cursorrules")) ||
+    fs.existsSync(path.join(indexProject, ".cursor"));
+  const hasWindsurf = fs.existsSync(path.join(indexProject, ".windsurfrules"));
+  const hasCopilot = fs.existsSync(path.join(indexProject, ".github", "copilot-instructions.md"));
+
+  if (hasCursor) console.log("           Cursor (.cursorrules)");
+  if (hasWindsurf) console.log("           WindSurf (.windsurfrules)");
+  if (hasCopilot) console.log("           GitHub Copilot (.github/copilot-instructions.md)");
+
+  console.log("\n测试: node \"" + path.join(USER_COMMANDS, "scripts", "inject-hook.js") + "\"");
+  console.log("手动同步其他平台: node .claude/commands/skillhub/scripts/sync-rules.js --all");
 }
 
 main();
