@@ -29,6 +29,10 @@ skillhub 通过索引表让你快速发现和调用技能，无需在 system pro
 4. **匹配了一个技能** → 调用该技能
 5. **没有匹配** → 正常回复
 
+**首次使用 / registry.json 不存在时**：
+- 自动运行 `node .claude/commands/skillhub/scripts/indexer.js` 创建索引
+- 这是**一次性操作**，后续会话直接读取已有文件
+
 **多技能匹配示例**：
 - "帮我调试这个 bug 并写测试" → 匹配 `diagnose` + `test`，两个都调用
 - "审查代码后提交" → 匹配 `review` + `commit`，两个都调用
