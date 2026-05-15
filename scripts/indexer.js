@@ -1,19 +1,18 @@
 /**
- * Skillhub Indexer — 扫描所有 SKILL.md，生成 registry.json
+ * Skillhub Indexer - scan SKILL.md files, build registry.json
  *
- * 运行时机（仅手动触发）：
- *   1. 首次安装 skillhub
- *   2. 用户添加/删除了技能
- *   3. 用户明确要求重建索引
+ * When to run (manual only):
+ *   1. First install of skillhub
+ *   2. User added/removed skills
+ *   3. User explicitly asks to rebuild index
  *
- * 用法: node indexer.js [--project-path <path>]
+ * Usage: node indexer.js [--project-path <path>]
  */
 
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-// --- 配置 ---
 const PROJECT_PATH = process.argv.includes("--project-path")
   ? process.argv[process.argv.indexOf("--project-path") + 1]
   : process.cwd();
@@ -21,19 +20,11 @@ const PROJECT_PATH = process.argv.includes("--project-path")
 const REGISTRY_OUTPUT = path.join(PROJECT_PATH, ".claude", "skillhub-registry.json");
 
 const SEARCH_DIRS = [
-  // 项目级技能
-  {
-    base: path.join(PROJECT_PATH, ".claude", "commands"),
-    source: "project",
-  },
-  // 用户级技能（目录形式）
-  {
-    base: path.join(os.homedir(), ".claude", "commands"),
-    source: "user",
-  },
+  { base: path.join(PROJECT_PATH, ".claude", "commands"), source: "project" },
+  { base: path.join(os.homedir(), ".claude", "commands"), source: "user" },
 ];
 
-// --- YAML frontmatter 解析（轻量，无外部依赖） ---
+// --- YAML frontmatter parser ---
 function parseFrontmatter(content) {
   const match = content.match(/^---\s*\n([\s\S]*?)---/);
   if (!match) return {};
@@ -52,36 +43,63 @@ function parseFrontmatter(content) {
   return fm;
 }
 
-// --- 关键词提取 ---
-function extractKeywords(description) {
+// --- Extract body after frontmatter ---
+function getBody(content) {
+  const match = content.match(/^---\s*\n[\s\S]*?---\n*/);
+  if (!match) return content;
+  return content.substring(match[0].length);
+}
+
+// --- Keyword extraction ---
+function extractKeywords(description, bodyContent) {
   if (!description) return [];
   const keywords = new Set();
 
-  // 1. 提取 "Use when" / "when user" 后的触发短语（最高优先级）
-  const triggerMatch = description.match(
-    /(?:Use when|when user)\s+(says?\s+)?(.+?)(?:\.\s*(?:Use|When|$)|$)/i
-  );
-  if (triggerMatch) {
-    const triggerText = triggerMatch[2];
-    // 按逗号/顿号/或/or 分割
-    const parts = triggerText.split(/[,，]|\s+or\s+/i);
+  // 1. "Use when" / "when user" trigger phrases (highest priority)
+  // Split description on the trigger marker, take everything after it
+  const useWhenMatch = description.match(/Use\s+when\s+(.+)/i);
+  const whenUserMatch = description.match(/[Ww]hen\s+user\s+(?:says?\s+)?(.+)/i);
+  const triggerText = useWhenMatch ? useWhenMatch[1] : (whenUserMatch ? whenUserMatch[1] : null);
+
+  if (triggerText) {
+    // Clean up and split by comma/or
+    const cleaned = triggerText
+      .replace(/^[""]|[""]$/g, "")
+      .replace(/[""]/g, "")
+      .replace(/^(the\s+)?user\s+(says?\s+|wants\s+to\s+|asks\s+for\s+|mentions\s+)/i, "")
+      .trim();
+
+    // Split by common delimiters
+    const parts = cleaned.split(/[,，]|\s+or\s+|\s+and\s+/i);
     for (const part of parts) {
-      let cleaned = part.trim()
-        .replace(/^[""]|[""]$/g, "")  // 去首尾引号
-        .replace(/[""]/g, "")          // 去内部引号
-        .replace(/^and\s+/i, "")       // 去前导 and
-        .replace(/invokes?\s+\//g, "") // 去 "invokes /skill"
-        .replace(/^(the\s+)?user\s+(says?\s+|wants\s+to\s+|asks\s+for\s+|mentions\s+)/i, "")
-        .replace(/^or\s+(says?\s+|invokes?\s+)/i, "")
+      let p = part.trim()
+        .replace(/^or\s+/i, "")
+        .replace(/invokes?\s+\//g, "")
         .toLowerCase()
         .trim();
-      if (cleaned.length >= 2 && cleaned.length <= 40) {
-        keywords.add(cleaned);
+      // Remove trailing period
+      p = p.replace(/\.$/, "").trim();
+      if (p.length >= 2 && p.length <= 80) {
+        keywords.add(p);
       }
     }
   }
 
-  // 2. 提取引号中的触发词/短语（如 "debug this", "use caveman"）
+  // 1b. "Run before" / "or if" patterns (used by setup-matt-pocock-skills etc.)
+  const runBeforeMatch = description.match(/Run\s+before\s+(?:first\s+)?use\s+of\s+(.+)/i);
+  if (runBeforeMatch) {
+    const skills = runBeforeMatch[1].replace(/`/g, "").trim().toLowerCase();
+    keywords.add("setup skills for: " + skills.substring(0, 60));
+  }
+  const orIfMatch = description.match(/or\s+if\s+(those\s+)?skills\s+appear\s+to\s+be\s+(.+)/i);
+  if (orIfMatch) {
+    const context = orIfMatch[2].replace(/\.$/, "").trim().toLowerCase();
+    if (context.length >= 5 && context.length <= 60) {
+      keywords.add(context);
+    }
+  }
+
+  // 2. Quoted trigger phrases
   const quoted = description.match(/[""]([^""]{2,40})[""]/g);
   if (quoted) {
     for (const q of quoted) {
@@ -90,25 +108,76 @@ function extractKeywords(description) {
     }
   }
 
-  // 3. 提取技能名本身（通常是第一个词或斜杠命令）
+  // 3. Skill name itself
   const skillNameMatch = description.match(/^(\w[\w-]*)/);
   if (skillNameMatch) {
     const name = skillNameMatch[1].toLowerCase();
     if (name.length > 2) keywords.add(name);
   }
 
-  // 4. 若关键词不足，从首句提取有意义的实词
+  // 4. Extract meaningful phrases from body when keywords are sparse
+  if (keywords.size < 4 && bodyContent) {
+    // 4a. "TRIGGER when:" pattern
+    const bodyTrigger = bodyContent.match(/TRIGGER\s+when:\s*(.+?)(?:\.|$)/im);
+    if (bodyTrigger) {
+      const parts = bodyTrigger[1].split(/[,，]|\s+or\s+/i);
+      for (const part of parts) {
+        const cleaned = part.trim().toLowerCase().replace(/[.;]$/g, "");
+        if (cleaned.length >= 3 && cleaned.length <= 80) {
+          keywords.add(cleaned);
+        }
+      }
+    }
+
+    // 4b. First ## heading
+    const headingMatch = bodyContent.match(/^##\s+(.+)$/m);
+    if (headingMatch) {
+      const heading = headingMatch[1].trim().toLowerCase();
+      if (heading.length >= 2 && heading.length <= 30) {
+        keywords.add(heading);
+      }
+    }
+
+    // 4c. Bigrams from first paragraph of body
+    if (keywords.size < 4) {
+      const firstPara = bodyContent.split(/\n\n|$/)[0].trim();
+      const stopWords = new Set([
+        "this", "that", "when", "with", "from", "your", "want", "need",
+        "the", "and", "for", "what", "how", "does", "file", "files",
+        "into", "its", "has", "been", "can", "all", "will", "not", "are",
+        "you", "have", "had", "was", "were", "they", "them", "their",
+        "our", "just", "also", "about", "than", "then", "each", "over",
+        "under", "after", "before", "between", "through",
+      ]);
+      const words = firstPara
+        .replace(/[#*>`\[\]()]/g, "")
+        .split(/[\s,，;；:：!！?？.。]+/)
+        .map(w => w.toLowerCase().replace(/[^a-z0-9-]/g, ""))
+        .filter(w => w.length > 3 && !stopWords.has(w));
+
+      for (let i = 0; i < words.length - 1 && keywords.size < 6; i++) {
+        const bigram = words[i] + " " + words[i + 1];
+        if (bigram.length >= 5 && bigram.length <= 60) {
+          keywords.add(bigram);
+        }
+      }
+
+      if (keywords.size < 4) {
+        for (const w of words) {
+          if (keywords.size >= 6) break;
+          keywords.add(w);
+        }
+      }
+    }
+  }
+
+  // 5. Final fallback: individual meaningful words from description
   if (keywords.size < 3) {
     const stopWords = new Set([
-      "this", "that", "when", "user", "with", "from", "your", "want", "need",
-      "mentions", "asks", "says", "use", "used", "using", "the", "and", "for",
-      "what", "how", "does", "file", "files", "into", "its", "has", "been",
-      "can", "all", "will", "not", "are", "you", "have", "had", "was", "were",
-      "they", "them", "their", "our", "just", "also", "about", "than", "then",
-      "each", "over", "under", "after", "before", "between", "through",
+      "this", "that", "when", "with", "from", "your", "want", "need",
+      "the", "and", "for", "what", "how", "does", "file", "files",
     ]);
-    const firstSentence = description.split(/[.。]\s*/)[0];
-    const words = firstSentence.split(/[\s,，;；:：!！?？()（）]+/);
+    const words = description.split(/[\s,，;；:：!！?？()（）]+/);
     for (const word of words) {
       const w = word.toLowerCase().replace(/[^a-z0-9-]/g, "");
       if (w.length > 3 && !stopWords.has(w)) {
@@ -120,19 +189,39 @@ function extractKeywords(description) {
   return [...keywords].slice(0, 8);
 }
 
-// --- 生成 summary（首句截断到 80 字符） ---
-function generateSummary(description) {
+// --- Summary: use full description + body fallback ---
+function generateSummary(description, bodyContent) {
+  if (!description && bodyContent) {
+    const firstLine = bodyContent.split(/[.\n]/)[0].trim();
+    if (!firstLine) return "";
+    if (firstLine.length <= 100) return firstLine;
+    return firstLine.substring(0, 97) + "...";
+  }
   if (!description) return "";
+
   let text = description
-    .replace(/^>\s*/, "")           // 去前导 blockquote
-    .replace(/[""]/g, "")           // 去引号
+    .replace(/^>\s*/, "")
+    .replace(/[""]/g, "")
     .trim();
-  const firstSentence = text.split(/[.。]\s*/)[0].trim();
-  if (firstSentence.length <= 80) return firstSentence;
-  return firstSentence.substring(0, 77) + "...";
+
+  // Take first 2 sentences, max 120 chars
+  const sentences = text.split(/[.。]\s*/);
+  let summary = sentences[0].trim();
+  if (summary.length < 50 && sentences.length > 1) {
+    const second = sentences[1].trim();
+    if (summary.length + second.length + 2 <= 120) {
+      summary += ". " + second;
+    }
+  }
+
+  if (summary.length <= 120) return summary;
+
+  const truncated = summary.substring(0, 117);
+  const lastSpace = truncated.lastIndexOf(" ");
+  return (lastSpace > 60 ? truncated.substring(0, lastSpace) : truncated) + "...";
 }
 
-// --- 扫描技能 ---
+// --- Scan skills ---
 function scanSkills() {
   const skills = [];
 
@@ -146,11 +235,9 @@ function scanSkills() {
         let skillPath, name;
 
         if (entry.isDirectory()) {
-          // 目录形式: skill-name/SKILL.md
           skillPath = path.join(base, entry.name, "SKILL.md");
           name = entry.name;
         } else if (entry.isFile() && entry.name.endsWith(".md") && entry.name !== "README.md") {
-          // 扁平 .md 文件（用户级技能常见格式）
           skillPath = path.join(base, entry.name);
           name = entry.name.replace(/\.md$/, "");
         } else {
@@ -162,11 +249,12 @@ function scanSkills() {
         try {
           const content = fs.readFileSync(skillPath, "utf-8");
           const fm = parseFrontmatter(content);
+          const body = getBody(content);
 
           const displayName = fm.name || name;
           const description = fm.description || "";
-          const summary = generateSummary(description);
-          const keywords = extractKeywords(description);
+          const summary = generateSummary(description, body);
+          const keywords = extractKeywords(description, body);
           const hasScripts = entry.isDirectory()
             ? fs.existsSync(path.join(base, entry.name, "scripts"))
             : false;
@@ -181,54 +269,59 @@ function scanSkills() {
             description_length: description.length,
           });
         } catch (err) {
-          console.error(`[skillhub] 警告: 无法解析 ${skillPath}: ${err.message}`);
+          console.error(`[skillhub] warn: cannot parse ${skillPath}: ${err.message}`);
         }
       }
     } catch (err) {
-      console.error(`[skillhub] 警告: 无法读取目录 ${base}: ${err.message}`);
+      console.error(`[skillhub] warn: cannot read ${base}: ${err.message}`);
     }
   }
 
-  // 按 name 排序
-  skills.sort((a, b) => a.name.localeCompare(b.name));
+  // Deduplicate by name, prefer project-level over user-level
+  const seen = {};
+  for (const sk of skills) {
+    const existing = seen[sk.name];
+    if (!existing || (sk.source === "project" && existing.source !== "project")) {
+      seen[sk.name] = sk;
+    }
+  }
+  const deduped = Object.values(seen);
 
-  return skills;
+  deduped.sort((a, b) => a.name.localeCompare(b.name));
+  return deduped;
 }
 
-// --- 主流程 ---
+// --- Main ---
 function main() {
-  console.error("[skillhub] 正在扫描技能...");
+  console.error("[skillhub] scanning skills...");
 
   const skills = scanSkills();
 
   if (skills.length === 0) {
-    console.error("[skillhub] 未找到任何技能，仍将生成空 registry.json");
+    console.error("[skillhub] no skills found, writing empty registry");
   } else {
-    console.error(`[skillhub] 已找到 ${skills.length} 个技能`);
+    console.error(`[skillhub] found ${skills.length} skills`);
   }
 
   const registry = {
-    version: 1,
+    version: 2,
     generated_at: new Date().toISOString(),
     skills,
   };
 
-  // 确保输出目录存在
   const outDir = path.dirname(REGISTRY_OUTPUT);
   if (!fs.existsSync(outDir)) {
     fs.mkdirSync(outDir, { recursive: true });
   }
 
-  // 原子写入
   const tmpPath = REGISTRY_OUTPUT + ".tmp";
   fs.writeFileSync(tmpPath, JSON.stringify(registry, null, 2), "utf-8");
   fs.renameSync(tmpPath, REGISTRY_OUTPUT);
 
-  console.error(`[skillhub] 已写入: ${REGISTRY_OUTPUT}`);
-  console.error(`[skillhub] 技能数: ${skills.length}`);
-  console.error(`[skillhub] 总描述字符: ${skills.reduce((s, sk) => s + sk.description_length, 0)}`);
+  console.error(`[skillhub] written: ${REGISTRY_OUTPUT}`);
+  console.error(`[skillhub] skills: ${skills.length}`);
+  console.error(`[skillhub] total description chars: ${skills.reduce((s, sk) => s + sk.description_length, 0)}`);
 
-  // 输出路径到 stdout，方便脚本调用
   console.log(REGISTRY_OUTPUT);
 }
 

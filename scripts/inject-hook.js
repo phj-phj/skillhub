@@ -145,7 +145,7 @@ function formatTable(registry) {
 
     for (const sk of list) {
       const name = sk.name;
-      const summary = (sk.summary || "").substring(0, 50);
+      const summary = (sk.summary || "").substring(0, 80);
       const triggers = (sk.keywords || []).slice(0, 5).join(", ");
       lines.push(`| ${name} | ${summary} | ${triggers} |`);
     }
